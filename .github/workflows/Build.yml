@@ -1,0 +1,70 @@
+name: Build JARVIS APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          ZIP="$(ls misti-android-fixed-ready*.zip | head -n 1)"
+          echo "Using: $ZIP"
+          unzip -q -o "$ZIP" -d build_dir
+          # gradlew jis folder me hai wahi project root hai (folder ka naam kuch bhi ho)
+          ROOT="$(dirname "$(find build_dir -maxdepth 3 -name gradlew | head -n 1)")"
+          echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
+          echo "Project root: $ROOT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK parts
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Download Hey Jarvis wake word models (personal use only)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          mkdir -p app/src/debug/assets/wake
+          cd app/src/debug/assets/wake
+          B=https://github.com/dscripka/openWakeWord/releases/download/v0.5.1
+          for f in melspectrogram.onnx embedding_model.onnx hey_jarvis_v0.1.onnx; do
+            curl -fL --retry 3 -o "$f" "$B/$f" || { echo "WARNING: could not download $f"; rm -f "$f"; }
+          done
+          ls -la
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Publish APK as release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: jarvis-${{ github.run_number }}
+          name: JARVIS build ${{ github.run_number }}
+          files: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
